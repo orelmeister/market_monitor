@@ -16,6 +16,7 @@ import logging
 import os
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from config import STATE_FILE_PATH
 
@@ -48,7 +49,7 @@ def save_state(state: dict[str, Any]) -> bool:
     """
     try:
         # Add metadata
-        state["_last_updated"] = datetime.utcnow().isoformat()
+        state["_last_updated"] = datetime.now(ZoneInfo("US/Eastern")).isoformat()
         state["_version"] = "1.0"
 
         with open(STATE_FILE_PATH, "w") as f:

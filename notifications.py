@@ -10,6 +10,7 @@ Implements:
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -165,7 +166,7 @@ def send_daily_summary(state: dict, info_signals: list) -> dict[str, bool]:
     """
     Compile and send a daily summary of all INFO-level signals and current state.
     """
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(ZoneInfo("US/Eastern")).strftime("%Y-%m-%d %I:%M %p %Z")
 
     lines = [
         f"📊 DAILY MARKET SUMMARY — {now}",

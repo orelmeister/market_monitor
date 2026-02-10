@@ -17,7 +17,8 @@ import logging
 import signal
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -225,9 +226,39 @@ def validate_configuration() -> bool:
 
 # ─── Startup Notification ───────────────────────────────────────────────────
 
+STARTUP_COOLDOWN_SECONDS = 300  # 5 minutes — suppress duplicate startup alerts
+
 def send_startup_notification() -> None:
-    """Send a notification that the monitor has started."""
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    """Send a notification that the monitor has started.
+    Persists startup time in state file to prevent duplicate alerts
+    when DigitalOcean restarts the container multiple times during deploy.
+    """
+    eastern = ZoneInfo("US/Eastern")
+    now_et = datetime.now(eastern)
+
+    # ── Dedup: skip if we already sent a startup alert recently ──
+    state = load_state()
+    last_startup_iso = state.get("_last_startup")
+    if last_startup_iso:
+        try:
+            last_startup = datetime.fromisoformat(last_startup_iso)
+            # Attach Eastern tz if the stored value is naive
+            if last_startup.tzinfo is None:
+                last_startup = last_startup.replace(tzinfo=eastern)
+            if (now_et - last_startup) < timedelta(seconds=STARTUP_COOLDOWN_SECONDS):
+                logger.info(
+                    "Startup notification suppressed — last sent %s ago",
+                    now_et - last_startup,
+                )
+                return
+        except (ValueError, TypeError):
+            pass  # corrupted value, send anyway
+
+    # ── Record this startup ──
+    state["_last_startup"] = now_et.isoformat()
+    save_state(state)
+
+    now = now_et.strftime("%Y-%m-%d %I:%M %p %Z")
     body = (
         f"🚀 Market Monitor Started\n"
         f"Time: {now}\n"
@@ -256,7 +287,7 @@ def handle_shutdown(signum, frame):
     logger.info(f"Received signal {signum} — shutting down gracefully...")
     send_alert(
         subject="Market Monitor Stopped",
-        body=f"Monitor shut down at {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
+        body=f"Monitor shut down at {datetime.now(ZoneInfo('US/Eastern')).strftime('%Y-%m-%d %I:%M %p %Z')}",
         level="INFO",
         alert_key="SHUTDOWN",
     )
