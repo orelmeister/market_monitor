@@ -1,0 +1,54 @@
+# DigitalOcean App Platform Specification
+# This defines a Worker component (background process, no HTTP port).
+# Deploy via: doctl apps create --spec .do/app.yaml
+# Or connect your GitHub repo in the DO control panel — it auto-detects this file.
+
+name: market-monitor
+region: nyc
+
+workers:
+  - name: market-sentinel
+    # GitHub source (update with your repo details)
+    github:
+      repo: orelmeister/market_monitor
+      branch: main
+      deploy_on_push: true
+
+    # Python buildpack
+    environment_slug: python
+
+    # Run the main monitor script
+    run_command: python market_monitor.py
+
+    # Instance size: Basic ($5/mo — 1 vCPU, 0.5 GB RAM)
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    instance_count: 1
+
+    # Environment variables (set values in DO dashboard for security)
+    envs:
+      - key: FMP_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: POLYGON_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: TELEGRAM_BOT_TOKEN
+        scope: RUN_TIME
+        type: SECRET
+      - key: TELEGRAM_CHAT_ID
+        scope: RUN_TIME
+        type: SECRET
+      - key: LOG_LEVEL
+        scope: RUN_TIME
+        value: "INFO"
+      - key: ALERT_COOLDOWN_HOURS
+        scope: RUN_TIME
+        value: "4"
+      - key: MONITOR_INTERVAL_MINUTES
+        scope: RUN_TIME
+        value: "15"
+
+# Alerts for deployment failures
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DEPLOYMENT_LIVE
