@@ -40,10 +40,11 @@ CHAIN_IDS = {
     "arbitrum": "42161",
 }
 
-# Minimum liquidity to consider (in USD)
-MIN_LIQUIDITY_USD = 5000
+# Minimum liquidity to consider for alerts (in USD)
+# Set low to catch early - can filter more strictly in signal level
+MIN_LIQUIDITY_USD = 1000
 # Maximum token age for "new" tokens (in minutes)
-MAX_NEW_TOKEN_AGE_MINUTES = 60
+MAX_NEW_TOKEN_AGE_MINUTES = 120  # 2 hours window for new tokens
 
 # RPC URLs from environment
 SOLANA_RPC = os.getenv("SOLANA_RPC_URL", "")
@@ -89,7 +90,10 @@ _watchlist: dict = {}  # Tokens we're watching
 
 def get_new_pairs(chain: str = "solana", limit: int = 50) -> list[dict]:
     """
-    Fetch recently created pairs from DexScreener.
+    Fetch recently created pairs - uses GeckoTerminal as primary source.
+    
+    DexScreener's /token-profiles/latest/v1 doesn't include liquidity/price data,
+    so we use GeckoTerminal for new pool discovery instead.
     
     Args:
         chain: Chain to query (solana, ethereum, base, bsc)
@@ -98,15 +102,20 @@ def get_new_pairs(chain: str = "solana", limit: int = 50) -> list[dict]:
     Returns:
         List of pair data dictionaries
     """
+    # GeckoTerminal has better data for new pools (includes liquidity, price, etc.)
+    pairs = get_new_pairs_geckoterminal(chain, limit)
+    
+    if pairs:
+        return pairs
+    
+    # Fallback: try DexScreener trending/boosted as backup
     try:
-        # Use the token profiles endpoint which shows new tokens
-        # Or use the boosted tokens which are often new listings
-        url = f"{DEXSCREENER_API}/token-profiles/latest/v1"
+        logger.info(f"GeckoTerminal returned no pairs for {chain}, trying DexScreener boosted...")
+        url = f"{DEXSCREENER_API}/token-boosts/latest/v1"
         resp = requests.get(url, timeout=10)
         
         if resp.status_code != 200:
-            # Fallback: try getting pairs from GeckoTerminal
-            return get_new_pairs_geckoterminal(chain, limit)
+            return []
         
         data = resp.json()
         
@@ -116,8 +125,8 @@ def get_new_pairs(chain: str = "solana", limit: int = 50) -> list[dict]:
         return chain_pairs[:limit]
         
     except Exception as e:
-        logger.warning(f"DexScreener failed, trying GeckoTerminal: {e}")
-        return get_new_pairs_geckoterminal(chain, limit)
+        logger.warning(f"DexScreener boosted also failed: {e}")
+        return []
 
 
 def get_new_pairs_geckoterminal(chain: str = "solana", limit: int = 50) -> list[dict]:
@@ -161,8 +170,9 @@ def get_new_pairs_geckoterminal(chain: str = "solana", limit: int = 50) -> list[
             liquidity = float(attrs.get("reserve_in_usd") or 0)
             price_usd = attrs.get("base_token_price_usd")
             
-            # Skip if no valid data
-            if not token_address or token_symbol == "???" or liquidity < MIN_LIQUIDITY_USD:
+            # Skip only if totally invalid (no address or no symbol)
+            # Allow unknown liquidity for brand new tokens
+            if not token_address or token_symbol == "???" or token_symbol == "":
                 continue
             
             # Parse creation time
@@ -412,9 +422,10 @@ def scan_new_tokens(chains: list[str] = None) -> list[MemeSignal]:
                 if age_minutes > MAX_NEW_TOKEN_AGE_MINUTES:
                     continue
             
-            # Skip if liquidity too low or zero
-            if not token.liquidity_usd or token.liquidity_usd < MIN_LIQUIDITY_USD:
-                continue
+            # Allow tokens with unknown liquidity (brand new) but filter out confirmed low liquidity
+            # None means just created, 0 means no liquidity added yet
+            if token.liquidity_usd is not None and 0 < token.liquidity_usd < MIN_LIQUIDITY_USD:
+                continue  # Has liquidity but too low - skip
             
             # Mark as seen
             _seen_tokens.add(token_key)
@@ -425,13 +436,19 @@ def scan_new_tokens(chains: list[str] = None) -> list[MemeSignal]:
             token.is_honeypot = safety.get("is_honeypot", None)
             token.mint_revoked = not safety.get("is_mintable", True)
             
-            # Determine signal level
-            if token.safety_score >= 80 and token.liquidity_usd >= 20000:
-                level = "HOT"
-            elif token.safety_score >= 60 and token.liquidity_usd >= 10000:
-                level = "WATCHLIST"
-            elif token.safety_score < 40 or safety.get("is_honeypot"):
+            # Determine signal level based on available data
+            liquidity = token.liquidity_usd or 0
+            
+            # Default to WATCHLIST for new tokens (we want to see them!)
+            if token.safety_score < 40 or safety.get("is_honeypot"):
                 level = "WARNING"
+            elif token.safety_score >= 80 and liquidity >= 20000:
+                level = "HOT"
+            elif token.safety_score >= 60 and liquidity >= 5000:
+                level = "HOT"
+            elif liquidity >= 1000 or token.liquidity_usd is None:
+                # Has decent liquidity OR brand new (unknown liquidity)
+                level = "WATCHLIST"
             else:
                 level = "INFO"
             
@@ -441,6 +458,15 @@ def scan_new_tokens(chains: list[str] = None) -> list[MemeSignal]:
                 age_min = int((datetime.now() - token.pair_created_at).total_seconds() / 60)
                 age_str = f" | Age: {age_min}min"
             
+            # Format liquidity - handle None for brand new tokens
+            if token.liquidity_usd is not None:
+                liq_str = f"${token.liquidity_usd:,.0f}"
+            else:
+                liq_str = "⏳ Pending (brand new!)"
+            
+            price_str = f"${token.price_usd:.8f}" if token.price_usd else "⏳ Pending"
+            vol_str = f"${token.volume_24h:,.0f}" if token.volume_24h else "N/A"
+            
             message = f"""
 🆕 NEW TOKEN DETECTED
 ━━━━━━━━━━━━━━━━━━━
@@ -449,9 +475,9 @@ Chain: {token.chain.upper()}
 DEX: {token.dex}
 
 📊 METRICS
-Liquidity: ${token.liquidity_usd:,.0f}
-Price: ${token.price_usd:.8f}
-24h Volume: ${token.volume_24h:,.0f}{age_str}
+Liquidity: {liq_str}
+Price: {price_str}
+24h Volume: {vol_str}{age_str}
 
 🔒 SAFETY SCORE: {token.safety_score}/100
 Honeypot: {'❌ YES' if token.is_honeypot else '✅ No'}
