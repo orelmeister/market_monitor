@@ -46,6 +46,7 @@ from technical_analysis import (
 from macro_analysis import check_macro_environment
 from notifications import send_alert, send_daily_summary
 from state_manager import load_state, save_state, update_state, get_state_summary
+from meme_scanner import job_meme_scan, job_trending_scan
 
 # ─── Logging Setup ───────────────────────────────────────────────────────────
 
@@ -324,6 +325,7 @@ def main() -> None:
         job_market_health()
         job_crypto_canary()
         job_macro_sentiment()
+        job_meme_scan()  # Initial meme coin scan
     except Exception as e:
         logger.error(f"Initial check failed (non-fatal): {e}")
 
@@ -369,6 +371,26 @@ def main() -> None:
         id="crypto_canary",
         name="Crypto Canary",
         misfire_grace_time=300,
+    )
+
+    # ─── Meme Coin Monitoring (24/7) ─────────────────────────────────────────
+    
+    # New token scan: every 2 minutes, 24/7
+    scheduler.add_job(
+        job_meme_scan,
+        IntervalTrigger(minutes=2),
+        id="meme_scan",
+        name="Meme Coin Scanner",
+        misfire_grace_time=60,
+    )
+
+    # Trending tokens: every 5 minutes, 24/7
+    scheduler.add_job(
+        job_trending_scan,
+        IntervalTrigger(minutes=5),
+        id="trending_scan",
+        name="Trending Tokens",
+        misfire_grace_time=120,
     )
 
     # News/Macro sentiment: every 60 min, Mon-Fri 8 AM - 6 PM ET

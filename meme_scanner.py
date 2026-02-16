@@ -1,0 +1,572 @@
+#!/usr/bin/env python3
+"""
+meme_scanner.py — Meme Coin Scanner for DEX Monitoring
+
+Monitors DEXs across Solana, Ethereum, and Base for new token launches.
+Runs 24/7 independently of traditional market hours.
+
+Features:
+- New token detection via DexScreener API
+- Token safety analysis via GoPlus
+- Trending token monitoring
+- Configurable alerts via Telegram
+"""
+
+import logging
+import os
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Optional
+import requests
+
+from notifications import send_alert
+
+logger = logging.getLogger("meme_scanner")
+
+# ─── Configuration ───────────────────────────────────────────────────────────
+
+# API Endpoints (all free, no keys required for basic use)
+DEXSCREENER_API = "https://api.dexscreener.com"
+GOPLUS_API = "https://api.gopluslabs.io/api/v1"
+GECKOTERMINAL_API = "https://api.geckoterminal.com/api/v2"
+
+# Chain IDs for GoPlus
+CHAIN_IDS = {
+    "solana": "solana",
+    "ethereum": "1",
+    "base": "8453",
+    "bsc": "56",
+    "arbitrum": "42161",
+}
+
+# Minimum liquidity to consider (in USD)
+MIN_LIQUIDITY_USD = 5000
+# Maximum token age for "new" tokens (in minutes)
+MAX_NEW_TOKEN_AGE_MINUTES = 60
+
+# RPC URLs from environment
+SOLANA_RPC = os.getenv("SOLANA_RPC_URL", "")
+ETHEREUM_RPC = os.getenv("ETHEREUM_RPC_URL", "")
+BASE_RPC = os.getenv("BASE_RPC_URL", "")
+
+
+@dataclass
+class TokenInfo:
+    """Information about a detected token."""
+    address: str
+    chain: str
+    name: str
+    symbol: str
+    price_usd: Optional[float]
+    liquidity_usd: Optional[float]
+    volume_24h: Optional[float]
+    price_change_24h: Optional[float]
+    pair_created_at: Optional[datetime]
+    dex: str
+    url: str
+    safety_score: Optional[int] = None
+    is_honeypot: Optional[bool] = None
+    mint_revoked: Optional[bool] = None
+    freeze_revoked: Optional[bool] = None
+
+
+@dataclass
+class MemeSignal:
+    """Signal from meme coin scanner."""
+    level: str  # HOT, WATCHLIST, WARNING, INFO
+    name: str
+    message: str
+    token: Optional[TokenInfo] = None
+
+
+# ─── Tracked Tokens State ────────────────────────────────────────────────────
+
+_seen_tokens: set = set()  # Track already seen tokens to avoid duplicate alerts
+_watchlist: dict = {}  # Tokens we're watching
+
+# ─── DexScreener API Functions ───────────────────────────────────────────────
+
+def get_new_pairs(chain: str = "solana", limit: int = 50) -> list[dict]:
+    """
+    Fetch recently created pairs from DexScreener.
+    
+    Args:
+        chain: Chain to query (solana, ethereum, base, bsc)
+        limit: Maximum pairs to return
+        
+    Returns:
+        List of pair data dictionaries
+    """
+    try:
+        # Use the token profiles endpoint which shows new tokens
+        # Or use the boosted tokens which are often new listings
+        url = f"{DEXSCREENER_API}/token-profiles/latest/v1"
+        resp = requests.get(url, timeout=10)
+        
+        if resp.status_code != 200:
+            # Fallback: try getting pairs from GeckoTerminal
+            return get_new_pairs_geckoterminal(chain, limit)
+        
+        data = resp.json()
+        
+        # Filter by chain
+        chain_pairs = [p for p in data if p.get("chainId", "").lower() == chain.lower()]
+        
+        return chain_pairs[:limit]
+        
+    except Exception as e:
+        logger.warning(f"DexScreener failed, trying GeckoTerminal: {e}")
+        return get_new_pairs_geckoterminal(chain, limit)
+
+
+def get_new_pairs_geckoterminal(chain: str = "solana", limit: int = 50) -> list[dict]:
+    """
+    Fallback: Get new pools from GeckoTerminal.
+    """
+    try:
+        network_map = {
+            "solana": "solana",
+            "ethereum": "eth",
+            "base": "base",
+            "bsc": "bsc",
+        }
+        network = network_map.get(chain.lower(), chain)
+        
+        url = f"{GECKOTERMINAL_API}/networks/{network}/new_pools"
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        pools = data.get("data", [])
+        
+        # Convert to DexScreener-like format for compatibility
+        pairs = []
+        for pool in pools[:limit]:
+            attrs = pool.get("attributes", {})
+            pairs.append({
+                "chainId": chain,
+                "pairAddress": pool.get("id", "").split("_")[-1] if "_" in pool.get("id", "") else pool.get("id"),
+                "baseToken": {
+                    "address": attrs.get("address", ""),
+                    "name": attrs.get("name", "Unknown"),
+                    "symbol": attrs.get("name", "???").split("/")[0].strip() if "/" in attrs.get("name", "") else "???",
+                },
+                "priceUsd": attrs.get("base_token_price_usd"),
+                "liquidity": {"usd": float(attrs.get("reserve_in_usd", 0) or 0)},
+                "volume": {"h24": float(attrs.get("volume_usd", {}).get("h24", 0) or 0)},
+                "priceChange": {"h24": float(attrs.get("price_change_percentage", {}).get("h24", 0) or 0)},
+                "pairCreatedAt": None,  # GeckoTerminal doesn't provide this easily
+                "dexId": attrs.get("name", "").split(" ")[-1] if attrs.get("name") else "unknown",
+                "url": f"https://www.geckoterminal.com/{network}/pools/{pool.get('id', '').split('_')[-1]}",
+            })
+        
+        return pairs
+        
+    except Exception as e:
+        logger.error(f"GeckoTerminal new pools failed: {e}")
+        return []
+
+
+def get_token_pairs(token_address: str) -> list[dict]:
+    """
+    Get all trading pairs for a specific token.
+    
+    Args:
+        token_address: Token contract address
+        
+    Returns:
+        List of pair data
+    """
+    try:
+        url = f"{DEXSCREENER_API}/latest/dex/tokens/{token_address}"
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("pairs", [])
+    except Exception as e:
+        logger.error(f"Failed to fetch token pairs: {e}")
+        return []
+
+
+def get_trending_tokens(chain: str = "solana") -> list[dict]:
+    """
+    Get trending tokens from GeckoTerminal.
+    
+    Args:
+        chain: Chain to query
+        
+    Returns:
+        List of trending token data
+    """
+    try:
+        # Map chain names to GeckoTerminal network IDs
+        network_map = {
+            "solana": "solana",
+            "ethereum": "eth",
+            "base": "base",
+            "bsc": "bsc",
+            "arbitrum": "arbitrum",
+        }
+        network = network_map.get(chain.lower(), chain)
+        
+        url = f"{GECKOTERMINAL_API}/networks/{network}/trending_pools"
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("data", [])
+    except Exception as e:
+        logger.error(f"Failed to fetch trending tokens: {e}")
+        return []
+
+
+# ─── Token Safety Analysis ───────────────────────────────────────────────────
+
+def check_token_safety(token_address: str, chain: str = "ethereum") -> dict:
+    """
+    Check token safety using GoPlus Security API.
+    
+    Args:
+        token_address: Token contract address
+        chain: Chain name
+        
+    Returns:
+        Safety analysis dict with scores and flags
+    """
+    try:
+        chain_id = CHAIN_IDS.get(chain.lower(), "1")
+        
+        # GoPlus requires different endpoint for Solana
+        if chain.lower() == "solana":
+            url = f"{GOPLUS_API}/solana/token_security?contract_addresses={token_address}"
+        else:
+            url = f"{GOPLUS_API}/token_security/{chain_id}?contract_addresses={token_address}"
+        
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        if data.get("code") != 1:
+            return {"error": "API error", "safe": False}
+        
+        result = data.get("result", {}).get(token_address.lower(), {})
+        
+        # Parse safety flags
+        safety = {
+            "is_honeypot": result.get("is_honeypot") == "1",
+            "is_mintable": result.get("is_mintable") == "1",
+            "can_take_back_ownership": result.get("can_take_back_ownership") == "1",
+            "owner_change_balance": result.get("owner_change_balance") == "1",
+            "hidden_owner": result.get("hidden_owner") == "1",
+            "selfdestruct": result.get("selfdestruct") == "1",
+            "external_call": result.get("external_call") == "1",
+            "buy_tax": float(result.get("buy_tax", 0) or 0),
+            "sell_tax": float(result.get("sell_tax", 0) or 0),
+            "holder_count": int(result.get("holder_count", 0) or 0),
+            "lp_holder_count": int(result.get("lp_holder_count", 0) or 0),
+            "is_open_source": result.get("is_open_source") == "1",
+        }
+        
+        # Calculate safety score (0-100)
+        score = 100
+        if safety["is_honeypot"]:
+            score = 0  # Automatic fail
+        else:
+            if safety["is_mintable"]:
+                score -= 30
+            if safety["can_take_back_ownership"]:
+                score -= 20
+            if safety["owner_change_balance"]:
+                score -= 20
+            if safety["hidden_owner"]:
+                score -= 15
+            if safety["buy_tax"] > 5:
+                score -= min(20, safety["buy_tax"])
+            if safety["sell_tax"] > 5:
+                score -= min(20, safety["sell_tax"])
+            if not safety["is_open_source"]:
+                score -= 10
+        
+        safety["score"] = max(0, score)
+        safety["safe"] = score >= 50 and not safety["is_honeypot"]
+        
+        return safety
+        
+    except Exception as e:
+        logger.error(f"Failed to check token safety: {e}")
+        return {"error": str(e), "safe": False, "score": 0}
+
+
+# ─── Token Info Parsing ──────────────────────────────────────────────────────
+
+def parse_pair_to_token(pair: dict) -> Optional[TokenInfo]:
+    """
+    Parse DexScreener pair data into TokenInfo.
+    
+    Args:
+        pair: Raw pair data from DexScreener
+        
+    Returns:
+        TokenInfo object or None if parsing fails
+    """
+    try:
+        base_token = pair.get("baseToken", {})
+        
+        # Parse creation time
+        created_at = None
+        if pair.get("pairCreatedAt"):
+            created_at = datetime.fromtimestamp(pair["pairCreatedAt"] / 1000)
+        
+        return TokenInfo(
+            address=base_token.get("address", ""),
+            chain=pair.get("chainId", ""),
+            name=base_token.get("name", "Unknown"),
+            symbol=base_token.get("symbol", "???"),
+            price_usd=float(pair.get("priceUsd", 0) or 0),
+            liquidity_usd=float(pair.get("liquidity", {}).get("usd", 0) or 0),
+            volume_24h=float(pair.get("volume", {}).get("h24", 0) or 0),
+            price_change_24h=float(pair.get("priceChange", {}).get("h24", 0) or 0),
+            pair_created_at=created_at,
+            dex=pair.get("dexId", ""),
+            url=pair.get("url", f"https://dexscreener.com/{pair.get('chainId')}/{pair.get('pairAddress')}"),
+        )
+    except Exception as e:
+        logger.error(f"Failed to parse pair: {e}")
+        return None
+
+
+# ─── Main Scanner Jobs ───────────────────────────────────────────────────────
+
+def scan_new_tokens(chains: list[str] = None) -> list[MemeSignal]:
+    """
+    Scan for newly created tokens across specified chains.
+    
+    Args:
+        chains: List of chains to scan (default: solana, base, ethereum)
+        
+    Returns:
+        List of MemeSignal objects for new tokens found
+    """
+    if chains is None:
+        chains = ["solana", "base", "ethereum"]
+    
+    signals = []
+    
+    for chain in chains:
+        logger.info(f"Scanning {chain} for new tokens...")
+        
+        pairs = get_new_pairs(chain)
+        
+        for pair in pairs:
+            token = parse_pair_to_token(pair)
+            if not token:
+                continue
+            
+            # Skip if already seen
+            token_key = f"{token.chain}:{token.address}"
+            if token_key in _seen_tokens:
+                continue
+            
+            # Check if token is new enough
+            if token.pair_created_at:
+                age_minutes = (datetime.now() - token.pair_created_at).total_seconds() / 60
+                if age_minutes > MAX_NEW_TOKEN_AGE_MINUTES:
+                    continue
+            
+            # Skip if liquidity too low
+            if token.liquidity_usd and token.liquidity_usd < MIN_LIQUIDITY_USD:
+                continue
+            
+            # Mark as seen
+            _seen_tokens.add(token_key)
+            
+            # Check safety
+            safety = check_token_safety(token.address, token.chain)
+            token.safety_score = safety.get("score", 0)
+            token.is_honeypot = safety.get("is_honeypot", None)
+            token.mint_revoked = not safety.get("is_mintable", True)
+            
+            # Determine signal level
+            if token.safety_score >= 80 and token.liquidity_usd >= 20000:
+                level = "HOT"
+            elif token.safety_score >= 60 and token.liquidity_usd >= 10000:
+                level = "WATCHLIST"
+            elif token.safety_score < 40 or safety.get("is_honeypot"):
+                level = "WARNING"
+            else:
+                level = "INFO"
+            
+            # Create signal
+            age_str = ""
+            if token.pair_created_at:
+                age_min = int((datetime.now() - token.pair_created_at).total_seconds() / 60)
+                age_str = f" | Age: {age_min}min"
+            
+            message = f"""
+🆕 NEW TOKEN DETECTED
+━━━━━━━━━━━━━━━━━━━
+Token: ${token.symbol} ({token.name})
+Chain: {token.chain.upper()}
+DEX: {token.dex}
+
+📊 METRICS
+Liquidity: ${token.liquidity_usd:,.0f}
+Price: ${token.price_usd:.8f}
+24h Volume: ${token.volume_24h:,.0f}{age_str}
+
+🔒 SAFETY SCORE: {token.safety_score}/100
+Honeypot: {'❌ YES' if token.is_honeypot else '✅ No'}
+Mintable: {'⚠️ Yes' if not token.mint_revoked else '✅ Revoked'}
+
+🔗 Contract: {token.address[:20]}...
+📈 {token.url}
+"""
+            
+            signal = MemeSignal(
+                level=level,
+                name=f"new_token_{token.symbol}",
+                message=message.strip(),
+                token=token,
+            )
+            signals.append(signal)
+            
+            logger.info(f"[{level}] New token: ${token.symbol} on {token.chain} - Safety: {token.safety_score}")
+    
+    return signals
+
+
+def scan_trending_tokens(chains: list[str] = None) -> list[MemeSignal]:
+    """
+    Scan for trending tokens.
+    
+    Args:
+        chains: List of chains to scan
+        
+    Returns:
+        List of MemeSignal objects for trending tokens
+    """
+    if chains is None:
+        chains = ["solana", "base"]
+    
+    signals = []
+    
+    for chain in chains:
+        logger.info(f"Checking trending on {chain}...")
+        
+        trending = get_trending_tokens(chain)
+        
+        for item in trending[:5]:  # Top 5 trending
+            try:
+                attrs = item.get("attributes", {})
+                name = attrs.get("name", "Unknown")
+                
+                # Only alert on significant movers
+                price_change = float(attrs.get("price_change_percentage", {}).get("h24", 0) or 0)
+                if abs(price_change) < 50:  # Only >50% moves
+                    continue
+                
+                level = "INFO"
+                if price_change > 100:
+                    level = "HOT"
+                elif price_change > 50:
+                    level = "WATCHLIST"
+                
+                message = f"""
+📈 TRENDING: {name}
+Chain: {chain.upper()}
+24h Change: {price_change:+.1f}%
+"""
+                
+                signal = MemeSignal(
+                    level=level,
+                    name=f"trending_{chain}_{name[:10]}",
+                    message=message.strip(),
+                )
+                signals.append(signal)
+                
+            except Exception as e:
+                logger.error(f"Error parsing trending item: {e}")
+    
+    return signals
+
+
+# ─── Scheduled Job Entry Points ──────────────────────────────────────────────
+
+def job_meme_scan() -> None:
+    """
+    Scheduled job: Scan for new meme coins.
+    Should run every 1-2 minutes, 24/7.
+    """
+    logger.info("═══ Running Meme Coin Scan ═══")
+    try:
+        signals = scan_new_tokens()
+        
+        for signal in signals:
+            if signal.level in ("HOT", "WARNING"):
+                # Immediate alert for hot finds or warnings
+                send_alert(
+                    subject=f"MEME: {signal.level}",
+                    body=signal.message,
+                    level=signal.level,
+                    alert_key=signal.name,
+                )
+            elif signal.level == "WATCHLIST":
+                # Lower priority notification
+                send_alert(
+                    subject="MEME: Watchlist",
+                    body=signal.message,
+                    level="INFO",
+                    alert_key=signal.name,
+                )
+        
+        logger.info(f"Meme scan complete: {len(signals)} signals generated")
+        
+    except Exception as e:
+        logger.error(f"Meme scan failed: {e}", exc_info=True)
+
+
+def job_trending_scan() -> None:
+    """
+    Scheduled job: Check trending tokens.
+    Should run every 5 minutes, 24/7.
+    """
+    logger.info("═══ Running Trending Scan ═══")
+    try:
+        signals = scan_trending_tokens()
+        
+        for signal in signals:
+            if signal.level == "HOT":
+                send_alert(
+                    subject="TRENDING: Hot Mover",
+                    body=signal.message,
+                    level="INFO",
+                    alert_key=signal.name,
+                )
+        
+        logger.info(f"Trending scan complete: {len(signals)} signals")
+        
+    except Exception as e:
+        logger.error(f"Trending scan failed: {e}", exc_info=True)
+
+
+# ─── Direct Test ─────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    
+    print("Testing meme scanner...")
+    print()
+    
+    # Test new token scan
+    print("=== Scanning for new tokens ===")
+    signals = scan_new_tokens(["solana"])
+    for sig in signals[:3]:  # Show first 3
+        print(f"\n[{sig.level}] {sig.name}")
+        print(sig.message)
+    
+    print()
+    print("=== Checking trending ===")
+    trending = scan_trending_tokens(["solana"])
+    for sig in trending[:3]:
+        print(f"\n[{sig.level}] {sig.name}")
+        print(sig.message)
