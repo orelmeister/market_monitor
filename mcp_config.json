@@ -1,0 +1,67 @@
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+      },
+      "description": "GitHub MCP Server for repository management, issue tracking, and code search",
+      "capabilities": [
+        "Search code and repositories for market analysis patterns",
+        "Create and manage issues for tracking market events",
+        "Access financial data repositories",
+        "Collaborate on strategy development"
+      ]
+    },
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "description": "Persistent memory server for tracking market patterns and agent learning",
+      "capabilities": [
+        "Store significant market events",
+        "Track pattern occurrences over time",
+        "Build knowledge graph of market relationships",
+        "Remember user preferences and strategies"
+      ]
+    },
+    "fetch": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-fetch"],
+      "description": "Web fetching server for accessing external market data sources",
+      "capabilities": [
+        "Fetch real-time news from financial websites",
+        "Access Fed announcements and economic data",
+        "Monitor MarketWatch, Bloomberg, Reuters",
+        "Scrape earnings calendars and analyst ratings"
+      ]
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "description": "Sequential thinking server for complex multi-step market analysis",
+      "capabilities": [
+        "Analyze complex market scenarios",
+        "Build investment theses step by step",
+        "Reason through multi-signal situations",
+        "Develop trading strategies"
+      ]
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "./data", "./logs", "./reports"],
+      "description": "Filesystem access for storing market data and reports",
+      "capabilities": [
+        "Store historical market data",
+        "Save analysis reports",
+        "Maintain log files",
+        "Export portfolio snapshots"
+      ]
+    }
+  },
+  "globalSettings": {
+    "timeout": 30000,
+    "retries": 3,
+    "logLevel": "info"
+  }
+}

@@ -5,4 +5,15 @@ APScheduler>=3.10.4
 pandas>=2.1.0
 pytz>=2024.1
 tzdata>=2024.1
+numpy>=1.26.0
+
+# Agent Orchestrator Dependencies
+asyncio-throttle>=1.0.2
+aiohttp>=3.9.0
+
 # Polygon.io — no extra SDK needed, we use direct REST via requests
+
+# Optional: For enhanced agent capabilities
+# openai>=1.0.0          # For LLM integration
+# anthropic>=0.18.0      # For Claude integration
+# langchain>=0.1.0       # For agent framework integration

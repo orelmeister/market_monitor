@@ -208,3 +208,285 @@ doctl apps update <app-id> --spec .do/app.yaml
 - FMP failures: use cached last-known data from state file
 - Telegram failures: log error, continue execution
 - Scheduler keeps running even if individual jobs fail
+
+---
+
+## AI Agent Orchestrator
+
+The Market Monitor includes an AI Agent Orchestrator that provides intelligent market analysis and decision-making capabilities.
+
+### Agent Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      AgentOrchestrator                               │
+│              (Central Intelligence Layer)                            │
+├──────────────┬──────────────┬──────────────┬───────────────────────┤
+│  ToolRegistry│  MCPCoordinator│  AgentContext│  Decision Engine    │
+│  (20+ tools) │  (5 servers)   │  (State/Mem) │  (Query Router)     │
+├──────────────┴──────────────┴──────────────┴───────────────────────┤
+│                        MCP Server Integration                        │
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────────┐ ┌───────────┐ │
+│  │ GitHub  │ │ Memory  │ │  Fetch  │ │ Sequential  │ │Filesystem │ │
+│  │  MCP    │ │   MCP   │ │   MCP   │ │  Thinking   │ │    MCP    │ │
+│  └─────────┘ └─────────┘ └─────────┘ └─────────────┘ └───────────┘ │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Agent Files
+
+| File | Purpose |
+|------|---------|
+| `agent_orchestrator.py` | Main agent class, tool execution, query handling |
+| `agent_tools.py` | Custom tool definitions, portfolio analytics |
+| `agent_config.py` | Agent settings, permissions, presets |
+| `mcp_integration.py` | MCP server interfaces and coordination |
+| `mcp_config.json` | MCP server configuration |
+
+### Available Tools
+
+#### Market Data Tools
+- `get_current_price` - Get price for any ticker
+- `fetch_all_prices` - Get prices for all monitored tickers
+- `get_market_status` - Check if market is open (Polygon)
+
+#### Technical Analysis Tools
+- `analyze_sma` - SPY 200-day SMA regime detection
+- `analyze_rsi` - RSI overbought/oversold detection
+- `analyze_trailing_stop` - IVV trailing stop check
+- `analyze_crypto_canary` - BTC/ETH crash detection
+- `run_full_technical_analysis` - Complete technical suite
+
+#### Macro Analysis Tools
+- `analyze_news_sentiment` - FMP news sentiment scan
+- `check_fed_rate` - Fed rate decision tracking
+- `run_macro_analysis` - Complete macro analysis
+
+#### Advanced Analytics (agent_tools.py)
+- `calculate_portfolio_exposure` - Risk exposure breakdown
+- `analyze_correlation` - Cross-asset correlation matrix
+- `calculate_volatility_metrics` - Vol analysis with drawdown
+- `detect_market_regime` - BULL/BEAR/RANGING detection
+- `get_sector_performance` - Sector rotation analysis
+- `calculate_risk_metrics` - Sharpe, Beta, Alpha, VaR
+
+### Agent Operating Modes
+
+| Mode | Description |
+|------|-------------|
+| `AUTONOMOUS` | Agent executes decisions independently |
+| `SUPERVISED` | Agent proposes actions, waits for approval |
+| `INTERACTIVE` | Agent responds to queries only |
+| `MONITORING` | Agent monitors and reports only |
+| `BACKTESTING` | Agent runs in simulation mode |
+
+### Running the Agent
+
+```bash
+# Interactive mode (query-based)
+python agent_orchestrator.py --interactive
+
+# Single health check
+python agent_orchestrator.py
+
+# With specific mode
+AGENT_MODE=supervised python agent_orchestrator.py
+```
+
+### Example Agent Queries
+
+```python
+# In interactive mode
+Agent> What's the current price of SPY?
+Agent> Is the market overbought?
+Agent> Run a full health check
+Agent> What's the current market regime?
+Agent> Show me sector performance
+Agent> What tools are available?
+```
+
+---
+
+## MCP Server Integration
+
+The agent integrates with multiple MCP (Model Context Protocol) servers for extended capabilities.
+
+### Configured MCP Servers
+
+| Server | Purpose | Key Tools |
+|--------|---------|-----------|
+| **GitHub** | Issue tracking, code search | `github_create_issue`, `github_search_code` |
+| **Memory** | Pattern storage, knowledge graph | `create_entities`, `add_observations`, `search_nodes` |
+| **Fetch** | Web data fetching | `fetch_webpage` |
+| **Sequential Thinking** | Complex analysis | `sequentialthinking` |
+| **Filesystem** | Local storage | `read_file`, `write_file` |
+
+### MCP Use Cases
+
+#### GitHub MCP
+- Track significant market events as issues
+- Search for trading strategies in repositories
+- Document strategy changes in the repo
+
+#### Memory MCP
+- Store market signals for pattern detection
+- Build knowledge graph of market relationships
+- Track pattern occurrences over time
+- Remember user preferences and strategies
+
+#### Fetch MCP
+- Real-time news from MarketWatch, Reuters, Bloomberg
+- Fed announcements and economic calendar
+- VIX and Fear & Greed Index data
+- Earnings calendars
+
+#### Sequential Thinking MCP
+- Multi-step crash assessment
+- Recovery signal evaluation
+- Portfolio rebalancing decisions
+- Conflicting signal resolution
+
+### MCP Configuration
+
+Configure MCP servers in `mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+      }
+    },
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"]
+    }
+  }
+}
+```
+
+---
+
+## Agent Configuration
+
+### Environment Variables (Additional)
+
+```bash
+# Agent Settings
+AGENT_MODE=autonomous          # autonomous, supervised, interactive, monitoring
+ALERT_MODE=immediate           # immediate, batched, digest, silent
+
+# Thresholds (Override defaults)
+TRAILING_STOP_PERCENT=5.0
+BTC_CRASH_THRESHOLD=-10.0
+
+# MCP Settings
+MCP_GITHUB_ENABLED=true
+MCP_MEMORY_ENABLED=true
+MCP_FETCH_ENABLED=true
+GITHUB_REPO=owner/repo
+GITHUB_TOKEN=ghp_xxxxx
+
+# LLM Integration (Optional)
+LLM_PROVIDER=none              # openai, anthropic, azure, none
+LLM_MODEL=gpt-4
+LLM_API_KEY_VAR=OPENAI_API_KEY
+```
+
+### Configuration Presets
+
+```python
+from agent_config import (
+    get_default_config,
+    get_conservative_config,
+    get_aggressive_config,
+    get_testing_config,
+)
+
+# Conservative: tighter stops, supervised mode
+config = get_conservative_config()
+
+# Aggressive: looser thresholds, autonomous
+config = get_aggressive_config()
+
+# Testing: no external calls
+config = get_testing_config()
+```
+
+---
+
+## Extended File Structure
+
+```
+CLAUDE.md                 # This file — agent instructions
+market_monitor.py         # Entry point: scheduler + main loop
+config.py                 # Constants, tickers, thresholds
+technical_analysis.py     # SMA, RSI, trailing stops, crypto canary
+macro_analysis.py         # FMP news sentiment, Fed rate checks
+polygon_provider.py       # Polygon.io REST API wrapper
+notifications.py          # Telegram Bot alerts
+state_manager.py          # JSON state persistence
+
+# Agent System (NEW)
+agent_orchestrator.py     # AI Agent main class + tool execution
+agent_tools.py            # Custom tools + portfolio analytics
+agent_config.py           # Agent settings, modes, presets
+mcp_integration.py        # MCP server interfaces
+mcp_config.json           # MCP server configuration
+
+# Support Files
+market_monitor.md         # Original project specification
+requirements.txt          # Python dependencies
+.env.example              # Environment variable template
+.gitignore                # Git ignore rules
+.do/app.yaml              # DigitalOcean deployment spec
+Dockerfile                # Container build
+runtime.txt               # Python version pinning
+README.md                 # Setup & deployment guide
+```
+
+---
+
+## Agent Development Guidelines
+
+### Adding New Tools
+
+1. Define tool in `ToolRegistry._register_builtin_tools()`:
+```python
+self.register(ToolDefinition(
+    name="my_new_tool",
+    description="What this tool does",
+    category=ToolCategory.MARKET_DATA,
+    parameters={"param1": "str - Description"},
+    handler=self._tool_my_new_tool,
+    requires_api_key="OPTIONAL_API_KEY",
+))
+```
+
+2. Implement handler:
+```python
+async def _tool_my_new_tool(self, param1: str) -> ToolResult:
+    try:
+        # Tool logic here
+        return ToolResult(success=True, data={"result": "value"})
+    except Exception as e:
+        return ToolResult(success=False, error=str(e))
+```
+
+### Adding MCP Server Integration
+
+1. Add server to `mcp_config.json`
+2. Create interface class in `mcp_integration.py`
+3. Add tool mappings in `MCPCoordinator`
+
+### Best Practices
+
+- All tools should be async for concurrent execution
+- Use `ToolResult` for consistent return types
+- Log all tool executions for debugging
+- Rate limit external API calls
+- Validate inputs before execution
+- Handle errors gracefully, never crash the agent
