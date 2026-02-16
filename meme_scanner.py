@@ -133,32 +133,64 @@ def get_new_pairs_geckoterminal(chain: str = "solana", limit: int = 50) -> list[
         }
         network = network_map.get(chain.lower(), chain)
         
-        url = f"{GECKOTERMINAL_API}/networks/{network}/new_pools"
+        url = f"{GECKOTERMINAL_API}/networks/{network}/new_pools?include=base_token,quote_token"
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         
         pools = data.get("data", [])
+        included = {item["id"]: item for item in data.get("included", [])}
         
         # Convert to DexScreener-like format for compatibility
         pairs = []
         for pool in pools[:limit]:
             attrs = pool.get("attributes", {})
+            relationships = pool.get("relationships", {})
+            
+            # Get base token info from included data
+            base_token_ref = relationships.get("base_token", {}).get("data", {})
+            base_token_id = base_token_ref.get("id", "")
+            base_token_data = included.get(base_token_id, {}).get("attributes", {})
+            
+            # Extract token details
+            token_address = base_token_data.get("address", "")
+            token_name = base_token_data.get("name", "Unknown")
+            token_symbol = base_token_data.get("symbol", "???")
+            
+            # Get pool metrics
+            liquidity = float(attrs.get("reserve_in_usd") or 0)
+            price_usd = attrs.get("base_token_price_usd")
+            
+            # Skip if no valid data
+            if not token_address or token_symbol == "???" or liquidity < MIN_LIQUIDITY_USD:
+                continue
+            
+            # Parse creation time
+            created_at = attrs.get("pool_created_at")
+            pair_created_ms = None
+            if created_at:
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                    pair_created_ms = int(dt.timestamp() * 1000)
+                except:
+                    pass
+            
             pairs.append({
                 "chainId": chain,
                 "pairAddress": pool.get("id", "").split("_")[-1] if "_" in pool.get("id", "") else pool.get("id"),
                 "baseToken": {
-                    "address": attrs.get("address", ""),
-                    "name": attrs.get("name", "Unknown"),
-                    "symbol": attrs.get("name", "???").split("/")[0].strip() if "/" in attrs.get("name", "") else "???",
+                    "address": token_address,
+                    "name": token_name,
+                    "symbol": token_symbol,
                 },
-                "priceUsd": attrs.get("base_token_price_usd"),
-                "liquidity": {"usd": float(attrs.get("reserve_in_usd", 0) or 0)},
+                "priceUsd": price_usd,
+                "liquidity": {"usd": liquidity},
                 "volume": {"h24": float(attrs.get("volume_usd", {}).get("h24", 0) or 0)},
                 "priceChange": {"h24": float(attrs.get("price_change_percentage", {}).get("h24", 0) or 0)},
-                "pairCreatedAt": None,  # GeckoTerminal doesn't provide this easily
-                "dexId": attrs.get("name", "").split(" ")[-1] if attrs.get("name") else "unknown",
-                "url": f"https://www.geckoterminal.com/{network}/pools/{pool.get('id', '').split('_')[-1]}",
+                "pairCreatedAt": pair_created_ms,
+                "dexId": attrs.get("dex_id", "unknown"),
+                "url": f"https://www.geckoterminal.com/{network}/pools/{pool.get('id', '').split('_')[-1] if '_' in pool.get('id', '') else pool.get('id')}",
             })
         
         return pairs
@@ -362,6 +394,14 @@ def scan_new_tokens(chains: list[str] = None) -> list[MemeSignal]:
             if not token:
                 continue
             
+            # Skip invalid tokens
+            if not token.address or len(token.address) < 10:
+                continue
+            if token.symbol in ("???", "UNKNOWN", ""):
+                continue
+            if token.name in ("Unknown", "UNKNOWN", ""):
+                continue
+            
             # Skip if already seen
             token_key = f"{token.chain}:{token.address}"
             if token_key in _seen_tokens:
@@ -373,8 +413,8 @@ def scan_new_tokens(chains: list[str] = None) -> list[MemeSignal]:
                 if age_minutes > MAX_NEW_TOKEN_AGE_MINUTES:
                     continue
             
-            # Skip if liquidity too low
-            if token.liquidity_usd and token.liquidity_usd < MIN_LIQUIDITY_USD:
+            # Skip if liquidity too low or zero
+            if not token.liquidity_usd or token.liquidity_usd < MIN_LIQUIDITY_USD:
                 continue
             
             # Mark as seen
