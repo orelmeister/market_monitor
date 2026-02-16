@@ -41,8 +41,8 @@ CHAIN_IDS = {
 }
 
 # Minimum liquidity to consider for alerts (in USD)
-# Set low to catch early - can filter more strictly in signal level
-MIN_LIQUIDITY_USD = 1000
+# Set to $10K to filter out low-liquidity/high-risk tokens
+MIN_LIQUIDITY_USD = 10000
 # Maximum token age for "new" tokens (in minutes)
 MAX_NEW_TOKEN_AGE_MINUTES = 120  # 2 hours window for new tokens
 
