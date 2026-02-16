@@ -47,6 +47,23 @@ workers:
       - key: MONITOR_INTERVAL_MINUTES
         scope: RUN_TIME
         value: "15"
+      # Meme Coin Monitoring (Solana RPC)
+      - key: HELIUS_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: SOLANA_RPC_URL
+        scope: RUN_TIME
+        type: SECRET
+      # Alchemy for EVM chains
+      - key: ALCHEMY_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: ETHEREUM_RPC_URL
+        scope: RUN_TIME
+        type: SECRET
+      - key: BASE_RPC_URL
+        scope: RUN_TIME
+        type: SECRET
 
 # Alerts for deployment failures
 alerts:

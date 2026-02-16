@@ -170,7 +170,6 @@ def get_new_pairs_geckoterminal(chain: str = "solana", limit: int = 50) -> list[
             pair_created_ms = None
             if created_at:
                 try:
-                    from datetime import datetime
                     dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
                     pair_created_ms = int(dt.timestamp() * 1000)
                 except:
