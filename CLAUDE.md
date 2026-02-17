@@ -1,5 +1,16 @@
 # CLAUDE.md — Market Crash & Recovery Monitor
 
+## MANDATORY: Auto-Deploy After Every Task
+**ALWAYS** commit and push to GitHub after completing any task. No exceptions.
+```bash
+git add -A
+git commit -m "descriptive commit message"
+git push origin main
+```
+This triggers auto-deploy on DigitalOcean. Never leave changes uncommitted.
+
+---
+
 ## Project Overview
 This is an **always-on Market Sentinel** that monitors financial assets, technical indicators, and news sentiment to detect market crashes (Risk-Off) and recovery signals (Risk-On). It implements a "Core vs. Defense" investment strategy with automated alerting via **Telegram**.
 

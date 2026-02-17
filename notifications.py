@@ -45,8 +45,15 @@ def _is_rate_limited(alert_key: str, level: str) -> bool:
     """
     Check if an alert is rate-limited (within cooldown window).
     Returns True if we should NOT send this alert.
+    Portfolio alerts (alert_key starts with 'portfolio_') use a short
+    cooldown (5 min) so the user gets frequent updates.
     """
-    cooldown_hours = _get_cooldown_hours(level)
+    # Portfolio tokens get a short cooldown matching check interval
+    if alert_key.startswith("portfolio_"):
+        cooldown_hours = 5 / 60  # 5 minutes in hours
+    else:
+        cooldown_hours = _get_cooldown_hours(level)
+    
     last_sent = _alert_cooldowns.get(alert_key)
 
     if last_sent is None:

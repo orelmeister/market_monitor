@@ -677,10 +677,12 @@ def monitor_portfolio_tokens(tokens: list[dict]) -> list[MemeSignal]:
             # Determine alert level based on 24h change
             change_24h = token.price_change_24h or 0
             
-            if abs(change_24h) >= 20:
+            if abs(change_24h) >= 10:
                 level = "WARNING" if change_24h < 0 else "HOT"
-            elif abs(change_24h) >= 10:
+            elif abs(change_24h) >= 5:
                 level = "WATCHLIST"
+            elif abs(change_24h) >= 1:
+                level = "ALERT"  # 1%+ move — always notify
             else:
                 level = "INFO"
             
@@ -746,25 +748,34 @@ def job_portfolio_tokens() -> None:
         signals = monitor_portfolio_tokens(PORTFOLIO_TOKENS)
         
         for signal in signals:
-            # Always send updates for portfolio tokens (INFO level for routine)
+            token_sym = signal.token.symbol if signal.token else 'Unknown'
+            change_24h = signal.token.price_change_24h if signal.token else 0
+            
             if signal.level in ("HOT", "WARNING"):
-                # Significant move - immediate alert
+                # Big move (10%+) - immediate high-priority alert
                 send_alert(
-                    subject=f"PORTFOLIO: {signal.level} - {signal.token.symbol if signal.token else 'Unknown'}",
+                    subject=f"PORTFOLIO: {signal.level} - {token_sym}",
                     body=signal.message,
                     level=signal.level,
                     alert_key=signal.name,
                 )
             elif signal.level == "WATCHLIST":
-                # Moderate move - info alert
+                # Moderate move (5-10%) - alert
                 send_alert(
-                    subject=f"PORTFOLIO: Movement Detected",
+                    subject=f"PORTFOLIO: {token_sym} moved {change_24h:+.1f}%",
+                    body=signal.message,
+                    level="WARNING",
+                    alert_key=signal.name,
+                )
+            elif signal.level == "ALERT":
+                # 1%+ move - always notify user
+                send_alert(
+                    subject=f"PORTFOLIO: {token_sym} {change_24h:+.1f}%",
                     body=signal.message,
                     level="INFO",
                     alert_key=signal.name,
                 )
-            # INFO level updates are logged but not sent as alerts to avoid spam
-            # They will be included in daily summary
+            # INFO level (<1% change) - logged only, no alert spam
         
         logger.info(f"Portfolio check complete: {len(signals)} tokens monitored")
         
