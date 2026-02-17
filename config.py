@@ -20,6 +20,24 @@ DEFENSIVE_INCOME = ["JEPI", "JEPQ"]
 CRYPTO_CANARIES = ["BTC-USD", "ETH-USD"]
 BENCHMARK = "SPY"
 
+# ─── Portfolio Meme Tokens (Monitored every 5 minutes) ───────────────────────
+# Format: {"name": str, "symbol": str, "address": str, "chain": str}
+PORTFOLIO_TOKENS = [
+    {
+        "name": "Auki",
+        "symbol": "AUKI",
+        "address": "0x5cba0b7b488633cde1a57b8b406a7a7310d2993e",
+        "chain": "ethereum",
+    },
+    {
+        "name": "U.S. Oil",
+        "symbol": "USOR",
+        "address": "USoRyaQjch6E18nCdDvWoRgTo6osQs9MUd8JXEsspWR",
+        "chain": "solana",
+    },
+]
+PORTFOLIO_TOKEN_CHECK_INTERVAL_MIN: int = 5  # Check portfolio tokens every 5 minutes
+
 ALL_EQUITY_TICKERS = CORE_PORTFOLIO + DEFENSIVE_INCOME + [BENCHMARK]
 ALL_CRYPTO_TICKERS = CRYPTO_CANARIES
 ALL_TICKERS = ALL_EQUITY_TICKERS + ALL_CRYPTO_TICKERS

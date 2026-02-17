@@ -46,7 +46,7 @@ from technical_analysis import (
 from macro_analysis import check_macro_environment
 from notifications import send_alert, send_daily_summary
 from state_manager import load_state, save_state, update_state, get_state_summary
-from meme_scanner import job_meme_scan, job_trending_scan
+from meme_scanner import job_meme_scan, job_trending_scan, job_portfolio_tokens
 
 # ─── Logging Setup ───────────────────────────────────────────────────────────
 
@@ -326,6 +326,7 @@ def main() -> None:
         job_crypto_canary()
         job_macro_sentiment()
         job_meme_scan()  # Initial meme coin scan
+        job_portfolio_tokens()  # Initial portfolio token check (AUKI, USOR)
     except Exception as e:
         logger.error(f"Initial check failed (non-fatal): {e}")
 
@@ -390,6 +391,15 @@ def main() -> None:
         IntervalTrigger(minutes=5),
         id="trending_scan",
         name="Trending Tokens",
+        misfire_grace_time=120,
+    )
+
+    # Portfolio tokens: every 5 minutes, 24/7 (AUKI, USOR, etc.)
+    scheduler.add_job(
+        job_portfolio_tokens,
+        IntervalTrigger(minutes=5),
+        id="portfolio_tokens",
+        name="Portfolio Token Monitor",
         misfire_grace_time=120,
     )
 

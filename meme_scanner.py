@@ -614,6 +614,164 @@ def job_trending_scan() -> None:
         logger.error(f"Trending scan failed: {e}", exc_info=True)
 
 
+# ─── Portfolio Token Monitoring ──────────────────────────────────────────────
+
+# Track previous prices for change detection
+_portfolio_prev_prices: dict = {}
+
+
+def monitor_portfolio_tokens(tokens: list[dict]) -> list[MemeSignal]:
+    """
+    Monitor specific tokens in the user's portfolio.
+    Fetches current price, 24h change, and sends alerts on significant moves.
+    
+    Args:
+        tokens: List of token dicts with keys: name, symbol, address, chain
+        
+    Returns:
+        List of MemeSignal objects for portfolio updates
+    """
+    global _portfolio_prev_prices
+    signals = []
+    
+    for token_config in tokens:
+        try:
+            address = token_config["address"]
+            chain = token_config["chain"]
+            symbol = token_config["symbol"]
+            name = token_config["name"]
+            
+            logger.info(f"Checking portfolio token: ${symbol} on {chain}")
+            
+            # Get token data from DexScreener
+            pairs = get_token_pairs(address)
+            
+            if not pairs:
+                logger.warning(f"No pairs found for {symbol} ({address})")
+                continue
+            
+            # Get the primary pair (highest liquidity)
+            primary_pair = max(pairs, key=lambda p: float(p.get("liquidity", {}).get("usd", 0) or 0))
+            token = parse_pair_to_token(primary_pair)
+            
+            if not token:
+                continue
+            
+            # Get safety info
+            safety = check_token_safety(address, chain)
+            token.safety_score = safety.get("score", 0)
+            token.is_honeypot = safety.get("is_honeypot", None)
+            
+            # Calculate price change since last check
+            token_key = f"{chain}:{address}"
+            prev_price = _portfolio_prev_prices.get(token_key)
+            price_change_since_last = None
+            
+            if prev_price and token.price_usd:
+                price_change_since_last = ((token.price_usd - prev_price) / prev_price) * 100
+            
+            # Update stored price
+            if token.price_usd:
+                _portfolio_prev_prices[token_key] = token.price_usd
+            
+            # Determine alert level based on 24h change
+            change_24h = token.price_change_24h or 0
+            
+            if abs(change_24h) >= 20:
+                level = "WARNING" if change_24h < 0 else "HOT"
+            elif abs(change_24h) >= 10:
+                level = "WATCHLIST"
+            else:
+                level = "INFO"
+            
+            # Format the update message
+            price_str = f"${token.price_usd:.8f}" if token.price_usd else "N/A"
+            liq_str = f"${token.liquidity_usd:,.0f}" if token.liquidity_usd else "N/A"
+            vol_str = f"${token.volume_24h:,.0f}" if token.volume_24h else "N/A"
+            
+            change_emoji = "📈" if change_24h >= 0 else "📉"
+            change_str = f"{change_24h:+.2f}%"
+            
+            since_last_str = ""
+            if price_change_since_last is not None:
+                since_emoji = "⬆️" if price_change_since_last >= 0 else "⬇️"
+                since_last_str = f"\nSince Last Check: {since_emoji} {price_change_since_last:+.2f}%"
+            
+            message = f"""
+💼 PORTFOLIO UPDATE: ${symbol}
+━━━━━━━━━━━━━━━━━━━
+Token: {name}
+Chain: {chain.upper()}
+
+💰 PRICE: {price_str}
+{change_emoji} 24h Change: {change_str}{since_last_str}
+
+📊 METRICS
+Liquidity: {liq_str}
+24h Volume: {vol_str}
+Safety Score: {token.safety_score}/100
+
+🔗 {token.url}
+"""
+            
+            signal = MemeSignal(
+                level=level,
+                name=f"portfolio_{symbol}",
+                message=message.strip(),
+                token=token,
+            )
+            signals.append(signal)
+            
+            logger.info(f"Portfolio {symbol}: ${token.price_usd:.8f} ({change_24h:+.2f}% 24h)")
+            
+        except Exception as e:
+            logger.error(f"Error monitoring {token_config.get('symbol', 'unknown')}: {e}")
+    
+    return signals
+
+
+def job_portfolio_tokens() -> None:
+    """
+    Scheduled job: Monitor portfolio meme tokens.
+    Runs every 5 minutes, 24/7.
+    """
+    from config import PORTFOLIO_TOKENS
+    
+    logger.info("═══ Running Portfolio Token Check ═══")
+    try:
+        if not PORTFOLIO_TOKENS:
+            logger.info("No portfolio tokens configured")
+            return
+        
+        signals = monitor_portfolio_tokens(PORTFOLIO_TOKENS)
+        
+        for signal in signals:
+            # Always send updates for portfolio tokens (INFO level for routine)
+            if signal.level in ("HOT", "WARNING"):
+                # Significant move - immediate alert
+                send_alert(
+                    subject=f"PORTFOLIO: {signal.level} - {signal.token.symbol if signal.token else 'Unknown'}",
+                    body=signal.message,
+                    level=signal.level,
+                    alert_key=signal.name,
+                )
+            elif signal.level == "WATCHLIST":
+                # Moderate move - info alert
+                send_alert(
+                    subject=f"PORTFOLIO: Movement Detected",
+                    body=signal.message,
+                    level="INFO",
+                    alert_key=signal.name,
+                )
+            # INFO level updates are logged but not sent as alerts to avoid spam
+            # They will be included in daily summary
+        
+        logger.info(f"Portfolio check complete: {len(signals)} tokens monitored")
+        
+    except Exception as e:
+        logger.error(f"Portfolio token check failed: {e}", exc_info=True)
+
+
 # ─── Direct Test ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
