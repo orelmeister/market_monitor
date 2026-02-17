@@ -616,14 +616,27 @@ def job_trending_scan() -> None:
 
 # ─── Portfolio Token Monitoring ──────────────────────────────────────────────
 
-# Track previous prices for change detection
-_portfolio_prev_prices: dict = {}
+
+def _load_portfolio_prices() -> dict:
+    """Load persisted portfolio prices from state file."""
+    from state_manager import load_state
+    state = load_state()
+    return state.get("_portfolio_prices", {})
+
+
+def _save_portfolio_prices(prices: dict) -> None:
+    """Persist portfolio prices to state file (survives restarts)."""
+    from state_manager import load_state, save_state
+    state = load_state()
+    state["_portfolio_prices"] = prices
+    save_state(state)
 
 
 def monitor_portfolio_tokens(tokens: list[dict]) -> list[MemeSignal]:
     """
     Monitor specific tokens in the user's portfolio.
     Fetches current price, 24h change, and sends alerts on significant moves.
+    Persists prices to disk so "Since Last Check" survives restarts.
     
     Args:
         tokens: List of token dicts with keys: name, symbol, address, chain
@@ -631,7 +644,8 @@ def monitor_portfolio_tokens(tokens: list[dict]) -> list[MemeSignal]:
     Returns:
         List of MemeSignal objects for portfolio updates
     """
-    global _portfolio_prev_prices
+    # Load persisted prices (survives container restarts)
+    saved_prices = _load_portfolio_prices()
     signals = []
     
     for token_config in tokens:
@@ -657,24 +671,34 @@ def monitor_portfolio_tokens(tokens: list[dict]) -> list[MemeSignal]:
             if not token:
                 continue
             
-            # Get safety info
-            safety = check_token_safety(address, chain)
-            token.safety_score = safety.get("score", 0)
-            token.is_honeypot = safety.get("is_honeypot", None)
-            
-            # Calculate price change since last check
+            # Get safety info (skip on every check to reduce API calls — check once per hour)
             token_key = f"{chain}:{address}"
-            prev_price = _portfolio_prev_prices.get(token_key)
+            last_safety_check = saved_prices.get(f"{token_key}_safety_ts", 0)
+            now_ts = datetime.now().timestamp()
+            
+            if now_ts - last_safety_check > 3600:  # Re-check safety every hour
+                safety = check_token_safety(address, chain)
+                token.safety_score = safety.get("score", 0)
+                token.is_honeypot = safety.get("is_honeypot", None)
+                saved_prices[f"{token_key}_safety"] = token.safety_score
+                saved_prices[f"{token_key}_honeypot"] = token.is_honeypot
+                saved_prices[f"{token_key}_safety_ts"] = now_ts
+            else:
+                token.safety_score = saved_prices.get(f"{token_key}_safety", 0)
+                token.is_honeypot = saved_prices.get(f"{token_key}_honeypot", None)
+            
+            # Calculate price change since last check (persistent)
+            prev_price = saved_prices.get(token_key)
             price_change_since_last = None
             
-            if prev_price and token.price_usd:
+            if prev_price and token.price_usd and prev_price != token.price_usd:
                 price_change_since_last = ((token.price_usd - prev_price) / prev_price) * 100
             
             # Update stored price
             if token.price_usd:
-                _portfolio_prev_prices[token_key] = token.price_usd
+                saved_prices[token_key] = token.price_usd
             
-            # Determine alert level based on 24h change
+            # Determine alert level — portfolio tokens ALWAYS alert
             change_24h = token.price_change_24h or 0
             
             if abs(change_24h) >= 10:
@@ -684,7 +708,7 @@ def monitor_portfolio_tokens(tokens: list[dict]) -> list[MemeSignal]:
             elif abs(change_24h) >= 1:
                 level = "ALERT"  # 1%+ move — always notify
             else:
-                level = "INFO"
+                level = "PORTFOLIO"  # <1% change — still send for portfolio tokens
             
             # Format the update message
             price_str = f"${token.price_usd:.8f}" if token.price_usd else "N/A"
@@ -697,7 +721,11 @@ def monitor_portfolio_tokens(tokens: list[dict]) -> list[MemeSignal]:
             since_last_str = ""
             if price_change_since_last is not None:
                 since_emoji = "⬆️" if price_change_since_last >= 0 else "⬇️"
-                since_last_str = f"\nSince Last Check: {since_emoji} {price_change_since_last:+.2f}%"
+                since_last_str = f"\nSince Last Check: {since_emoji} {price_change_since_last:+.4f}%"
+            elif prev_price is None:
+                since_last_str = "\nSince Last Check: 🆕 First check"
+            else:
+                since_last_str = "\nSince Last Check: ➡️ No change"
             
             message = f"""
 💼 PORTFOLIO UPDATE: ${symbol}
@@ -729,6 +757,9 @@ Safety Score: {token.safety_score}/100
         except Exception as e:
             logger.error(f"Error monitoring {token_config.get('symbol', 'unknown')}: {e}")
     
+    # Persist prices to disk
+    _save_portfolio_prices(saved_prices)
+    
     return signals
 
 
@@ -736,6 +767,7 @@ def job_portfolio_tokens() -> None:
     """
     Scheduled job: Monitor portfolio meme tokens.
     Runs every 5 minutes, 24/7.
+    Always sends alerts for all portfolio tokens.
     """
     from config import PORTFOLIO_TOKENS
     
@@ -754,28 +786,35 @@ def job_portfolio_tokens() -> None:
             if signal.level in ("HOT", "WARNING"):
                 # Big move (10%+) - immediate high-priority alert
                 send_alert(
-                    subject=f"PORTFOLIO: {signal.level} - {token_sym}",
+                    subject=f"🚨 PORTFOLIO: {signal.level} - {token_sym}",
                     body=signal.message,
                     level=signal.level,
                     alert_key=signal.name,
                 )
             elif signal.level == "WATCHLIST":
-                # Moderate move (5-10%) - alert
+                # Moderate move (5-10%) - warning alert
                 send_alert(
-                    subject=f"PORTFOLIO: {token_sym} moved {change_24h:+.1f}%",
+                    subject=f"⚠️ PORTFOLIO: {token_sym} {change_24h:+.1f}%",
                     body=signal.message,
                     level="WARNING",
                     alert_key=signal.name,
                 )
             elif signal.level == "ALERT":
-                # 1%+ move - always notify user
+                # 1-5% move - info alert
                 send_alert(
-                    subject=f"PORTFOLIO: {token_sym} {change_24h:+.1f}%",
+                    subject=f"📊 PORTFOLIO: {token_sym} {change_24h:+.1f}%",
                     body=signal.message,
                     level="INFO",
                     alert_key=signal.name,
                 )
-            # INFO level (<1% change) - logged only, no alert spam
+            elif signal.level == "PORTFOLIO":
+                # <1% change - still send for portfolio tokens (user wants all updates)
+                send_alert(
+                    subject=f"💼 PORTFOLIO: {token_sym} {change_24h:+.1f}%",
+                    body=signal.message,
+                    level="INFO",
+                    alert_key=signal.name,
+                )
         
         logger.info(f"Portfolio check complete: {len(signals)} tokens monitored")
         
